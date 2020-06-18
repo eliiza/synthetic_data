@@ -1,0 +1,13 @@
+.DS_Store
+TF_GAN_Tutorial.ipynb
+dcgan.ipynb
+gan_base.py
+*.csv
+training_checkpoints
+*.zip
+.ipynb_checkpoints
+__pycache__
+hellinger-distance-criterion
+.idea
+hellinger_distance_criterion.cpython-38-darwin.so
+hellinger_distance_criterion.pyx
