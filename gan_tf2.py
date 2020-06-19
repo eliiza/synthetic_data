@@ -3,12 +3,16 @@
 # https://github.com/dialnd/imbalanced-algorithms
 ########################
 
-import argparse
+
 import time
+import os
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
 from sklearn.utils import check_random_state
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
 
 
 class GAN(object):
@@ -65,16 +69,21 @@ class GAN(object):
                  batch_size: int,
                  d_hidden_dims: list,
                  g_hidden_dims: list,
-                 n_inputs: int,
+                 noise_inputs: int,
                  g_outputs: int,
                  d_activation: object = layers.LeakyReLU,
                  g_activation: object = layers.LeakyReLU,
-                 d_learning_rate: float = 0.01,
+                 d_learning_rate: float = 0.001,
                  g_learning_rate: float = 0.0005,
-                 d_optimiser: object = tf.keras.optimizers.Adam,
-                 g_optimiser: object = tf.keras.optimizers.Adam,
+                 d_optimiser: object = tf.keras.optimizers.RMSprop,
+                 g_optimiser: object = tf.keras.optimizers.RMSprop,
+                 smoothing_noise: float = 0.1,
                  random_state: int = 42,
-                 log_every: int = None):
+                 log_every: int = 5,
+                 flip_label: bool = False,
+                 d_noise: bool = False,
+                 d_noise_stddev: float = 0.004,
+                 image_generation: bool = False):
 
         self.num_epochs = num_epochs
         self.batch_size = batch_size
@@ -82,7 +91,7 @@ class GAN(object):
         self.network_dims = {
             'd_hidden_dims': d_hidden_dims,
             'g_hidden_dims': g_hidden_dims,
-            'n_inputs': n_inputs,
+            'n_inputs': noise_inputs,
             'g_outputs': g_outputs
         }
 
@@ -91,6 +100,8 @@ class GAN(object):
 
         self.d_optimiser = d_optimiser(learning_rate=d_learning_rate)
         self.g_optimiser = g_optimiser(learning_rate=g_learning_rate)
+
+        self.smoothing_noise = smoothing_noise
 
         self._initialise_gan()
 
@@ -101,7 +112,16 @@ class GAN(object):
         self.random_state = check_random_state(random_state)
         tf.random.set_seed(random_state)
 
+        self.scaler = MinMaxScaler(feature_range=(-1, 1))
+
+        self.flip_label = flip_label
+
+        self.d_noise = d_noise
+        self.d_noise_stddev = d_noise_stddev
+
         self.log_every = log_every
+
+        self.image_generation = image_generation
 
     def _add_dense_layer(self,
                          model,
@@ -169,8 +189,8 @@ class GAN(object):
                                                     output_activation='linear')
 
     def _discriminator_loss(self, real_output, fake_output):
-        real_loss = self.cross_entropy(tf.ones_like(real_output), real_output)
-        fake_loss = self.cross_entropy(tf.zeros_like(fake_output), fake_output)
+        real_loss = self.cross_entropy(tf.ones_like(real_output) * (1 - self.smoothing_noise), real_output)
+        fake_loss = self.cross_entropy(tf.ones_like(fake_output) * self.smoothing_noise, fake_output)
         total_loss = real_loss + fake_loss
         return total_loss
 
@@ -180,9 +200,21 @@ class GAN(object):
     def _train_step(self,
                     data: object):
         noise = tf.random.normal([self.batch_size, self.network_dims['n_inputs']])
+        if self.d_noise:
+            dtype_data = tf.keras.backend.dtype(noise)
+            disc_noise = tf.random.normal([self.batch_size, self.network_dims['g_outputs']],
+                                          stddev=self.d_noise_stddev,
+                                          dtype=dtype_data)
+            data = tf.math.add(data, disc_noise)
 
         with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
             generated_data = self.generator(noise, training=True)
+            if self.d_noise:
+                dtype_data = tf.keras.backend.dtype(generated_data)
+                disc_noise = tf.random.normal([self.batch_size, self.network_dims['g_outputs']],
+                                              stddev=self.d_noise_stddev,
+                                              dtype=dtype_data)
+                generated_data = tf.math.add(generated_data, disc_noise)
 
             real_output = self.discriminator(data, training=True)
             fake_output = self.discriminator(generated_data, training=True)
@@ -198,15 +230,30 @@ class GAN(object):
 
         return gen_loss, disc_loss
 
+    def _plot_generated_images(self, epoch, examples=100, dim=(10, 10), figsize=(10, 10)):
+        noise = tf.random.normal([examples, self.network_dims['n_inputs']])
+        generated_images = self.generator.predict(noise)
+        generated_images = generated_images.reshape(examples, 28, 28)
+        plt.figure(figsize=figsize)
+        for i in range(generated_images.shape[0]):
+            plt.subplot(dim[0], dim[1], i + 1)
+            plt.imshow(generated_images[i], interpolation='nearest', cmap='gray', norm=Normalize())
+            plt.axis('off')
+        plt.tight_layout()
+        plt.savefig('gan_generated_image {epoch:04}.png'.format(epoch=epoch))
+        plt.close('all')
+
     def _train_gan(self,
                    dataset: object,
                    save_model: bool = True,
                    checkpoint_dir: str = './training_checkpoints') -> object:
 
+        start = time.time()
+        total_time = 0
+        g_losses = []
+        d_losses = []
+
         for epoch in range(self.num_epochs):
-            start = time.time()
-            g_losses = []
-            d_losses = []
 
             for data_batch in dataset:
                 g_loss, d_loss = self._train_step(data_batch)
@@ -217,19 +264,29 @@ class GAN(object):
             # Save the model every 15 epochs
             if save_model:
                 checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
-                checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
-                                                 discriminator_optimizer=discriminator_optimizer,
-                                                 generator=generator,
-                                                 discriminator=discriminator)
+                checkpoint = tf.train.Checkpoint(generator_optimizer=self.g_optimiser,
+                                                 discriminator_optimizer=self.d_optimiser,
+                                                 generator=self.generator,
+                                                 discriminator=self.discriminator)
                 if (epoch + 1) % 15 == 0:
                     checkpoint.save(file_prefix=checkpoint_prefix)
 
-            print('Time for epoch {} is {} sec'.format(epoch + 1, time.time() - start))
-            print("Generator loss: {}".format(np.mean(g_losses)))
-            print("Discriminator loss: {}".format(np.mean(d_losses)))
+            if (epoch + 1) % self.log_every == 0:
+                now = np.round(time.time() - start, 2)
+                total_time = np.round(now + total_time, 2)
+                print('Time for epoch {} is {} seconds.'.format(epoch + 1, now))
+                print("Total time passed: {} seconds".format(total_time))
+                print("Generator loss: {}".format(np.mean(g_losses)))
+                print("Discriminator loss: {}".format(np.mean(d_losses)))
+                if self.image_generation:
+                    self._plot_generated_images(epoch=epoch)
+                start = time.time()
+                g_losses = []
+                d_losses = []
 
     def fit(self,
             data,
+            data_unscaled: bool = False,
             buffer_size: int = None,
             save_model: bool = False,
             checkpoint_dir: str = './training_checkpoints') -> object:
@@ -246,6 +303,9 @@ class GAN(object):
         Returns:
 
         """
+        if data_unscaled:
+            data = self.scaler.fit_transform(data)
+
         if not buffer_size:
             buffer_size = data.shape[0]
 
