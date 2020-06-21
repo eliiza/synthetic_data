@@ -615,8 +615,7 @@ class WassersteinGAN(object):
         return gen_loss, disc_loss
 
     def _plot_generated_images(self, epoch, examples=100, dim=(10, 10), figsize=(10, 10)):
-        noise = tf.random.normal([examples, self.network_dims['n_inputs'], 1])
-        generated_images = self.generator.predict(noise)
+        generated_images = self.sample(examples)
         generated_images = generated_images.reshape(examples, 28, 28)
         plt.figure(figsize=figsize)
         for i in range(generated_images.shape[0]):
@@ -729,6 +728,6 @@ class WassersteinGAN(object):
         Returns:
             generated data
         """
-        noise = tf.random.normal([n_samples, self.network_dims['n_inputs']])
+        noise = tf.random.normal([n_samples, self.network_dims['n_inputs'], 1])
         samples = self.generator.predict(noise)
         return samples
