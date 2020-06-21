@@ -492,12 +492,13 @@ class WassersteinGAN(object):
         self.image_generation = image_generation
         self.image_dir = image_dir
 
-    def _add_dense_layer(self,
+
+    def _add_conv_layer(self,
                          model,
                          nodes,
                          activation,
-                         initialiser: object=None,
-                         kernel_con: object=None,
+                         initialiser: object = None,
+                         kernel_con: object = None,
                          use_bias=False):
         """
         Function to add a dense layer within a defined model.
@@ -512,15 +513,16 @@ class WassersteinGAN(object):
         Returns:
             model
         """
-        model.add(layers.Dense(nodes,
-                               use_bias=use_bias,
-                               kernel_constraint=kernel_con,
-                               kernel_initializer=initialiser))
+        model.add(layers.Conv1D(filters=nodes[0],
+                                kernel_size=nodes[1],
+                                use_bias=use_bias,
+                                kernel_constraint=kernel_con,
+                                kernel_initializer=initialiser))
         # model.add(layers.BatchNormalization())
         model.add(activation())
         return model
 
-    def _make_dense_model(self,
+    def _make_conv_model(self,
                           dims,
                           activation,
                           inputs: int,
@@ -548,24 +550,26 @@ class WassersteinGAN(object):
         model.add(tf.keras.Input(inputs))
 
         for nodes in dims:
-            self._add_dense_layer(model,
+            self._add_conv_layer(model,
                                   nodes,
                                   activation,
                                   kernel_con=kernel_constraint,
                                   initialiser=initialiser)
 
+        model.add(layers.Flatten())
         model.add(layers.Dense(outputs, use_bias=False, activation=output_activation))
 
         return model
 
+
     def _initialise_gan(self):
-        self.generator = self._make_dense_model(dims=self.network_dims['g_hidden_dims'],
+        self.generator = self._make_conv_model(dims=self.network_dims['g_hidden_dims'],
                                                 activation=self.g_activation,
-                                                inputs=self.network_dims['n_inputs'],
+                                                inputs=(self.network_dims['n_inputs'], 1),
                                                 outputs=self.network_dims['g_outputs'])
-        self.discriminator = self._make_dense_model(dims=self.network_dims['d_hidden_dims'],
+        self.discriminator = self._make_conv_model(dims=self.network_dims['d_hidden_dims'],
                                                     activation=self.d_activation,
-                                                    inputs=self.network_dims['g_outputs'],
+                                                    inputs=(self.network_dims['g_outputs'], 1),
                                                     kernel_constraint=WeightClip(self.clip_factor),
                                                     initialiser=self.init_fctn(self.init_stddev),
                                                     output_activation='linear')
@@ -575,10 +579,10 @@ class WassersteinGAN(object):
 
     def _train_step(self,
                     data: object):
-        noise = tf.random.normal([self.batch_size, self.network_dims['n_inputs']])
+        noise = tf.random.normal([self.batch_size, self.network_dims['n_inputs'], 1])
         if self.d_noise:
             dtype_data = tf.keras.backend.dtype(noise)
-            disc_noise = tf.random.normal([self.batch_size, self.network_dims['g_outputs']],
+            disc_noise = tf.random.normal([self.batch_size, self.network_dims['g_outputs'], 1],
                                           stddev=self.d_noise_stddev,
                                           dtype=dtype_data)
             data = tf.math.add(data, disc_noise * self.d_noise_decay_multiplier)
@@ -611,7 +615,7 @@ class WassersteinGAN(object):
         return gen_loss, disc_loss
 
     def _plot_generated_images(self, epoch, examples=100, dim=(10, 10), figsize=(10, 10)):
-        noise = tf.random.normal([examples, self.network_dims['n_inputs']])
+        noise = tf.random.normal([examples, self.network_dims['n_inputs'], 1])
         generated_images = self.generator.predict(noise)
         generated_images = generated_images.reshape(examples, 28, 28)
         plt.figure(figsize=figsize)

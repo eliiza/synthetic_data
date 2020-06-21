@@ -102,6 +102,73 @@ def train_step(data: object,
     return gen_loss, disc_loss
 
 
+    def _add_dense_layer(#self,
+                         model,
+                         nodes,
+                         activation,
+                         initialiser: object=None,
+                         kernel_con: object=None,
+                         use_bias=False):
+        """
+        Function to add a dense layer within a defined model.
+        NB: LeakyReLU is atm an advanced activation function in Keras and has to be added as a separate layer, hence
+        all activations for the hidden layers must be passed as a layer/activation function and cannot be specified
+        through their string identifier.
+        Args:
+            model: [object] Keras sequential model
+            nodes: [list] list of number of nodes for hidden layers
+            activation: [object] activation function for hidden layers (default: LeakyReLU)
+
+        Returns:
+            model
+        """
+        model.add(layers.Dense(nodes,
+                               use_bias=use_bias,
+                               kernel_constraint=kernel_con,
+                               kernel_initializer=initialiser))
+        # model.add(layers.BatchNormalization())
+        model.add(activation())
+        return model
+
+    def _make_dense_model(self,
+                          dims,
+                          activation,
+                          inputs: int,
+                          outputs: int = 1,
+                          kernel_constraint: object = None,
+                          initialiser: object = tf.keras.initializers.glorot_normal,
+                          output_activation: str = 'tanh'):
+        """
+        Make generator based on number of nodes given for hidden layers and activation function specified.
+        Number of noise inputs is given as well as expected number of outputs.
+        TODO: compare number of outputs to number of columns in data - do inside class before passing on values
+        TODO: add choice between dense and 1D-convolution?
+        Args:
+            dims: [list] numbers of nodes for dense layers
+            activation: [object] activation function for dense layers
+            inputs: [int] number of inputs
+            outputs: [int] number of outputs
+            output_activation: [str] default='tanh', string identifier for final activation function
+
+        Returns:
+            model
+        """
+
+        model = tf.keras.Sequential()
+        model.add(tf.keras.Input(inputs))
+
+        for nodes in dims:
+            self._add_dense_layer(model,
+                                  nodes,
+                                  activation,
+                                  kernel_con=kernel_constraint,
+                                  initialiser=initialiser)
+
+        model.add(layers.Dense(outputs, use_bias=False, activation=output_activation))
+
+        return model
+
+
 def train_gan(dataset: object,
               generator: object,
               discriminator: object,
