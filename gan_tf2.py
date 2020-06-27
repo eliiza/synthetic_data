@@ -67,16 +67,17 @@ class GAN(object):
 
     def __init__(self, num_epochs: int,
                  batch_size: int,
-                 d_hidden_dims: list,
-                 g_hidden_dims: list,
-                 noise_inputs: int,
-                 g_outputs: int,
-                 d_activation: object = layers.LeakyReLU,
-                 g_activation: object = layers.LeakyReLU,
+                 num_data_cols: int,
+                 d_hidden_layers: list,
+                 g_hidden_layers: list,
+                 noise_inputs: int = 100,
+                 d_outputs: int = 1,
+                 d_output_activation: str = 'linear',
+                 g_output_activation: str = 'tanh',
                  d_learning_rate: float = 0.001,
                  g_learning_rate: float = 0.0005,
-                 d_optimiser: object = tf.keras.optimizers.RMSprop,
-                 g_optimiser: object = tf.keras.optimizers.RMSprop,
+                 d_optimiser: object = tf.keras.optimizers.Adam,
+                 g_optimiser: object = tf.keras.optimizers.Adam,
                  smoothing_noise: float = 0.1,
                  smoothing_noise_decay_steps: int = 100,
                  random_state: int = 42,
@@ -91,15 +92,21 @@ class GAN(object):
         self.num_epochs = num_epochs
         self.batch_size = batch_size
 
-        self.network_dims = {
-            'd_hidden_dims': d_hidden_dims,
-            'g_hidden_dims': g_hidden_dims,
-            'n_inputs': noise_inputs,
-            'g_outputs': g_outputs
-        }
+        self.d_architecture = { 'num_inputs': num_data_cols,
+                                'hidden_layers': d_hidden_layers,
+                                'optimiser': d_optimiser,
+                                'learning_rate': d_learning_rate,
+                                'num_outputs': d_outputs,
+                                'output_activation': d_output_activation
+                                }
 
-        self.d_activation = d_activation
-        self.g_activation = g_activation
+        self.g_architecture = { 'num_inputs': noise_inputs,
+                                'hidden_layers': g_hidden_layers,
+                                'optimiser': g_optimiser,
+                                'learning_rate': g_learning_rate,
+                                'num_outputs': num_data_cols,
+                                'output_activation': g_output_activation
+                                }
 
         self.d_optimiser = d_optimiser(learning_rate=d_learning_rate)
         self.g_optimiser = g_optimiser(learning_rate=g_learning_rate)
@@ -129,11 +136,24 @@ class GAN(object):
         self.image_generation = image_generation
         self.image_dir = image_dir
 
-    def _add_dense_layer(self,
-                         model,
-                         nodes,
-                         activation,
-                         use_bias=False):
+    def _initialise_gan(self):
+        self.generator = GAN.make_model(self.g_architecture)
+        print("Initialised Generator: \n")
+        print(self.generator.summary())
+        self.discriminator = GAN.make_model(self.d_architecture)
+        print("Initialised Discriminator: \n")
+        print(self.discriminator.summary())
+
+
+    @staticmethod
+    def add_layer(model,
+                  type: str,
+                  layer: dict,
+                  batch_normalisation: bool = False,
+                  dropout: bool = False,
+                  dropout_rate: float = 0.3,
+                  advanced_activation: bool = False,
+                  activation_layer: object = tf.keras.layers.LeakyReLU):
         """
         Function to add a dense layer within a defined model.
         NB: LeakyReLU is atm an advanced activation function in Keras and has to be added as a separate layer, hence
@@ -147,17 +167,26 @@ class GAN(object):
         Returns:
             model
         """
-        model.add(layers.Dense(nodes, use_bias=use_bias))
-        model.add(layers.BatchNormalization())
-        model.add(activation())
+        if type == "dense":
+            model.add(layers.Dense(**layer))
+        elif type == 'conv':
+            model.add(layers.Conv1D(**layer))
+        else:
+            raise ValueError('Layer type must be dense (dense) or convolutional (conv).')
+
+        if batch_normalisation:
+            model.add(layers.BatchNormalization())
+
+        if dropout:
+            model.add(layers.Dropout(rate=dropout_rate))
+
+        if advanced_activation:
+            model.add(activation_layer())
+
         return model
 
-    def _make_dense_model(self,
-                          dims,
-                          activation,
-                          inputs: int,
-                          outputs: int = 1,
-                          output_activation: str = 'tanh'):
+    @staticmethod
+    def make_model(architecture: dict):
         """
         Make generator based on number of nodes given for hidden layers and activation function specified.
         Number of noise inputs is given as well as expected number of outputs.
@@ -175,24 +204,19 @@ class GAN(object):
         """
 
         model = tf.keras.Sequential()
-        model.add(tf.keras.Input(inputs))
+        if architecture['hidden_layers'][0]['type'] == 'dense':
+            model.add(tf.keras.Input(architecture['num_inputs']))
+        else:
+            model.add(tf.keras.Input((architecture['num_inputs'], 1)))
 
-        for nodes in dims:
-            self._add_dense_layer(model, nodes, activation)
+        for layer in architecture['hidden_layers']:
+            GAN.add_layer(model, **layer)
 
-        model.add(layers.Dense(outputs, use_bias=False, activation=output_activation))
+        model.add(layers.Dense(architecture['num_outputs'],
+                               use_bias=False,
+                               activation=architecture['output_activation']))
 
         return model
-
-    def _initialise_gan(self):
-        self.generator = self._make_dense_model(dims=self.network_dims['g_hidden_dims'],
-                                                activation=self.g_activation,
-                                                inputs=self.network_dims['n_inputs'],
-                                                outputs=self.network_dims['g_outputs'])
-        self.discriminator = self._make_dense_model(dims=self.network_dims['d_hidden_dims'],
-                                                    activation=self.d_activation,
-                                                    inputs=self.network_dims['g_outputs'],
-                                                    output_activation='linear')
 
     def _discriminator_loss(self, real_output, fake_output):
         real_noise = 1 - self.smoothing_noise * self.smooth_decay_multiplier
@@ -207,10 +231,10 @@ class GAN(object):
 
     def _train_step(self,
                     data: object):
-        noise = tf.random.normal([self.batch_size, self.network_dims['n_inputs']])
+        noise = tf.random.normal([self.batch_size, self.g_architecture['num_inputs']])
         if self.d_noise:
-            dtype_data = tf.keras.backend.dtype(noise)
-            disc_noise = tf.random.normal([self.batch_size, self.network_dims['g_outputs']],
+            dtype_data = tf.keras.backend.dtype(data)
+            disc_noise = tf.random.normal([self.batch_size, self.d_architecture['num_inputs']],
                                           stddev=self.d_noise_stddev,
                                           dtype=dtype_data)
             data = tf.math.add(data, disc_noise * self.d_noise_decay_multiplier)
@@ -219,7 +243,7 @@ class GAN(object):
             generated_data = self.generator(noise, training=True)
             if self.d_noise:
                 dtype_data = tf.keras.backend.dtype(generated_data)
-                disc_noise = tf.random.normal([self.batch_size, self.network_dims['g_outputs']],
+                disc_noise = tf.random.normal([self.batch_size, self.d_architecture['num_inputs']],
                                               stddev=self.d_noise_stddev,
                                               dtype=dtype_data)
                 generated_data = tf.math.add(generated_data, disc_noise * self.d_noise_decay_multiplier)
@@ -230,7 +254,6 @@ class GAN(object):
             gen_loss = self._generator_loss(fake_output)
             disc_loss = self._discriminator_loss(real_output, fake_output)
 
-
         gradients_of_generator = gen_tape.gradient(gen_loss, self.generator.trainable_variables)
         gradients_of_discriminator = disc_tape.gradient(disc_loss, self.discriminator.trainable_variables)
 
@@ -240,9 +263,9 @@ class GAN(object):
         return gen_loss, disc_loss
 
     def _plot_generated_images(self, epoch, examples=100, dim=(10, 10), figsize=(10, 10)):
-        noise = tf.random.normal([examples, self.network_dims['n_inputs']])
-        generated_images = self.generator.predict(noise)
+        generated_images = self.sample(examples)
         generated_images = generated_images.reshape(examples, 28, 28)
+        print(generated_images[1] - generated_images[0])
         plt.figure(figsize=figsize)
         for i in range(generated_images.shape[0]):
             plt.subplot(dim[0], dim[1], i + 1)
@@ -332,7 +355,7 @@ class GAN(object):
         if not buffer_size:
             buffer_size = data.shape[0]
 
-        if data.shape[1] != self.network_dims['g_outputs']:
+        if data.shape[1] != self.d_architecture['num_inputs']:
             raise Exception("Number of variables in data and generator output do not match.")
 
         # Shuffle and batch data
@@ -354,7 +377,7 @@ class GAN(object):
         Returns:
             generated data
         """
-        noise = tf.random.normal([n_samples, self.network_dims['n_inputs']])
+        noise = tf.random.normal([n_samples, self.g_architecture['num_inputs']])
         samples = self.generator.predict(noise)
         return samples
 
