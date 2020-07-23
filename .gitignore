@@ -12,3 +12,5 @@ hellinger-distance-criterion
 hellinger_distance_criterion.cpython-38-darwin.so
 hellinger_distance_criterion.pyx
 *.png
+model.py
+architecture.py
